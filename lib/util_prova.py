@@ -1,14 +1,9 @@
 import copy
 import numpy as np
 import qiskit
-from qiskit import ClassicalRegister, QuantumCircuit, QuantumRegister,transpile,execute
+from qiskit import ClassicalRegister, QuantumCircuit, QuantumRegister,transpile,Aer,execute
 from qiskit.utils.mitigation.fitters import CompleteMeasFitter
 from qiskit.ignis.mitigation.measurement import complete_meas_cal
-from qiskit import IBMQ
-from qiskit.providers.aer import QasmSimulator, Aer
-
-#provider = IBMQ.enable_account('c0df7c866f628346a4ad9eb0955b0b9e8ffedc7dc25fa33a87a59e50864c059fa00f211c7f611efee085a4b810646179209cc819b26a4903c733466bb8b96f51')
-#backend = provider.get_backend('ibmq_qasm_simulator')
 
 def qiskit_calibration_circuits(N_qubits,qubits_measure):
     '''
@@ -318,13 +313,16 @@ def bootstrap_mitigated_expectation(counts, observable, k, L, complete_meas_fitt
     return mean, std
 
 
-def miti_estimator(circuit,operator,estimator,shots=10000,level_miti=1,k=50):
+def miti_estimator(circuit,operator,estimator,shots=10000,level_miti=1,k=50,meas_fitters=None):
     L=int(shots/10)
     exp_vals=[]
     exp_errors=[]
     operators,qubits,coefficients=parse_pauli_sum_op(operator)
     meas_circs=[]
-    if level_miti==0:
+    meas_fitt=[]
+
+    if level_miti==0 or meas_fitters is not None:
+        
         for i,operator in enumerate(operators):
             meas_circs.append(measure_pauli_string(circuit,operator,qubits[i]))
         job = estimator.run(circuits=meas_circs,parameter_values=None, parameters=None,shots=shots)
@@ -337,113 +335,51 @@ def miti_estimator(circuit,operator,estimator,shots=10000,level_miti=1,k=50):
             a=list(job_result[i].values())
             bin_dict.append(dict(zip(b,a)))
         for i,operator in enumerate(operators):
-            diag_pauli_op = np.diag([(-1)**bin(i).count('1') for i in range(2**len(qubits[i]))])
-            exp_val=bootstrap_mitigated_expectation(bin_dict[i],diag_pauli_op,k,L,complete_meas_fitter=None)
-            exp_vals.append(exp_val[0])
-            exp_errors.append(exp_val[1])
-    if level_miti==1:
-        for i,operator in enumerate(operators):
-            meas_circs+=measure_pauli_operators_meas(circuit,operator,qubits[i])
-        job = estimator.run(circuits=meas_circs,parameter_values=None, parameters=None,shots=shots)
-        job_result=job.result().quasi_dists
-        bin_dict=[]
-        for i in range (0,len(job_result)):
-            b=list(job_result[i].keys())
-            for j in range (0,len(b)):
-                b[j]=DecimalToBinary(b[j],meas_circs[i].num_clbits)
-            a=list(job_result[i].values())
-            bin_dict.append(dict(zip(b,a)))
-            start=0
-        for i,operator in enumerate(operators):
-            diag_pauli_op = np.diag([(-1)**bin(i).count('1') for i in range(2**len(qubits[i]))])
+            diag_pauli_op = np.diag([(-1)**bin(k).count('1') for k in range(2**len(qubits[i]))])
             meas_calibs, s_labels = complete_meas_cal(np.arange(len(qubits[i])), len(qubits[i]), len(qubits[i]), circlabel='')
             job_cal_aux = execute(meas_calibs, backend=Aer.get_backend('aer_simulator'), shots=shots)
             cal_aux = job_cal_aux.result() 
-            job_qiskit=copy.deepcopy(cal_aux)
-
-
-            result_measure=bin_dict[start]
-            for j in range (0,len(s_labels)):
-                job_qiskit.results[j].data.counts=bin_dict[1+start+j]
-            meas_fitter = CompleteMeasFitter(job_qiskit, state_labels=s_labels)
-            start+=len(s_labels)+1 
-            exp_val=bootstrap_mitigated_expectation(result_measure,diag_pauli_op,k,L,complete_meas_fitter=meas_fitter)
-            exp_vals.append(exp_val[0])
-            exp_errors.append(exp_val[1])
-    if level_miti==2 or level_miti==3 or level_miti==4:
-        for i,operator in enumerate(operators):
-            meas_circs+=measure_pauli_operators_miti(circuit,operator,qubits[i])
-        job = estimator.run(circuits=meas_circs,parameter_values=None, parameters=None,shots=shots)
-        job_result=job.result().quasi_dists
-        bin_dict=[]
-        start=0
-        for i in range (0,len(job_result)):
-            b=list(job_result[i].keys())
-            for j in range (0,len(b)):
-                b[j]=DecimalToBinary(b[j],meas_circs[i].num_clbits)
-            a=list(job_result[i].values())
-            bin_dict.append(dict(zip(b,a)))
-        for i, pauli_op in enumerate(operators):
-
-            meas_calibs, s_labels = complete_meas_cal(np.arange(len(qubits[i])), len(qubits[i]), len(qubits[i]), circlabel='')
-            job_cal_aux = execute(meas_calibs, backend=Aer.get_backend('aer_simulator'), shots=shots)
-            cal_aux = job_cal_aux.result() 
-            job_qiskit=copy.deepcopy(cal_aux)
-            job_GEM_L=copy.deepcopy(cal_aux)
-            job_GEM_R=copy.deepcopy(cal_aux)
-
-
-            result_measure=bin_dict[start]
-            for j in range (0,len(s_labels)):
-                job_qiskit.results[j].data.counts=bin_dict[1+start+j]
-            meas_fitter = CompleteMeasFitter(job_qiskit, state_labels=s_labels)
-            for j in range (0,len(s_labels)):
-                job_GEM_L.results[j].data.counts=meas_fitter.filter.apply(bin_dict[1+start+len(s_labels)+j],method="least_squares")
-                job_GEM_R.results[j].data.counts=meas_fitter.filter.apply(bin_dict[1+start+2*len(s_labels)+j],method="least_squares")
-            start+=3*len(s_labels)+1 
-            meas_fitter_GEM_L = CompleteMeasFitter(job_GEM_L, state_labels=s_labels)
-            meas_fitter_GEM_R = CompleteMeasFitter(job_GEM_L, state_labels=s_labels)
-            Cal_GEM_L = meas_fitter_GEM_L.cal_matrix
-            Cal_GEM_R = meas_fitter_GEM_R.cal_matrix
-            Cal_GEM=(Cal_GEM_L+Cal_GEM_R)/2
-
-            meas_fitter_GEM=copy.deepcopy(meas_fitter)
-            meas_fitter_GEM.cal_matrices=Cal_GEM
-
-            r=np.sum(Cal_GEM,axis=1,dtype='float')
-            r=r/np.sum(r)
-            p_t=(Cal_GEM[0][0]-1)/(r[0]-1)
-            '''
-            p_t=0
-            for i in range (0,len(r)):
-            p_t+=(C[i][i]-1)/(r[i]-1)/len(r)
-            '''
-
-            random_vector=dict(zip(s_labels,r))
-            Cal_ampdep=Cal_GEM
-            for x in range (0,len(s_labels)):
-                for y in range (0,len(s_labels)):
-                    Cal_ampdep[x][y]=(Cal_GEM[x][y]-p_t*r[y])/(1-p_t)
-            meas_fitter_ampdep=copy.deepcopy(meas_fitter)
-            meas_fitter_ampdep.cal_matrices=Cal_ampdep
-
-            diag_pauli_op = np.diag([(-1)**bin(i).count('1') for i in range(2**len(qubits[i]))])
+            meas_fitter_aux = CompleteMeasFitter(cal_aux, state_labels=s_labels)
+            if level_miti==0:
+                exp_val=bootstrap_mitigated_expectation(bin_dict[i],diag_pauli_op,k,L,complete_meas_fitter=None)
+                exp_vals.append(exp_val[0])
+                exp_errors.append(exp_val[1])
+            if level_miti==1:
+                exp_val=bootstrap_mitigated_expectation(bin_dict[i],diag_pauli_op,k,L,complete_meas_fitter=meas_fitters[i])
+                exp_vals.append(exp_val[0])
+                exp_errors.append(exp_val[1])
             if level_miti==2:
-                miti_counts=bootstrap_counts(result_measure,20,shots,return_mean=True,complete_meas_fitter=meas_fitter)
+                meas_fitter_meas=copy.deepcopy(meas_fitter_aux)
+                meas_fitter_meas.cal_matrices=meas_fitters[i][0]
+                meas_fitter_GEM=copy.deepcopy(meas_fitter_aux)
+                meas_fitter_GEM.cal_matrices=meas_fitters[i][1]
+                miti_counts=bootstrap_counts(bin_dict[i],20,shots,return_mean=True,complete_meas_fitter=meas_fitter_meas)
                 exp_val=bootstrap_mitigated_expectation(miti_counts,diag_pauli_op,k,L,complete_meas_fitter=meas_fitter_GEM)
                 exp_vals.append(exp_val[0])
                 exp_errors.append(exp_val[1])
-            if level_miti==3:
-                exp_val=bootstrap_mitigated_expectation(result_measure,diag_pauli_op,k,L,complete_meas_fitter=meas_fitter)
-                exp_vals.append(exp_val[0]/(1-p_t))
-                exp_errors.append(exp_val[1]/(1-p_t))
-            if level_miti==4:
-                miti_counts=bootstrap_counts(result_measure,20,shots,return_mean=True,complete_meas_fitter=meas_fitter)
+            if  level_miti==3:
+                meas_fitter_meas=copy.deepcopy(meas_fitter_aux)
+                meas_fitter_meas.cal_matrix=meas_fitters[i][0]
+                exp_val=bootstrap_mitigated_expectation(bin_dict[i],diag_pauli_op,k,L,complete_meas_fitter=meas_fitter_meas)
+                exp_val_rand=bootstrap_mitigated_expectation(meas_fitters[i][2],diag_pauli_op,k,L,complete_meas_fitter=None)
+                exp_vals.append((exp_val[0]-meas_fitters[i][3]*exp_val_rand[0])/(1-meas_fitters[i][3]))
+                exp_errors.append(exp_val[1]/(1-meas_fitters[i][3]))
+            if  level_miti==4:
+                
+                meas_fitter_meas=copy.deepcopy(meas_fitter_aux)
+                meas_fitter_meas.cal_matrix=meas_fitters[i][0]
+                meas_fitter_GEM=copy.deepcopy(meas_fitter_aux)
+                meas_fitter_GEM.cal_matrix=meas_fitters[i][1]
+                meas_fitter_ampdep=copy.deepcopy(meas_fitter_aux)
+                meas_fitter_ampdep.cal_matrix=meas_fitters[i][4]
+
+                miti_counts=bootstrap_counts(bin_dict[i],20,shots,return_mean=True,complete_meas_fitter=meas_fitter_meas)
+                random_vector=meas_fitters[i][2]
                 c=random_vector
                 for label in s_labels:
                     if label not in miti_counts.keys():
                         miti_counts[label]=0
-                    c[label]=(miti_counts[label]-random_vector[label])/(1-p_t)
+                    c[label]=(miti_counts[label]-meas_fitters[i][3]*random_vector[label])/(1-meas_fitters[i][3])
                 if any(v < 0 for v in c.values()):
                     sum_c=sum(c.values())
                     m = min(c.values())
@@ -454,13 +390,132 @@ def miti_estimator(circuit,operator,estimator,shots=10000,level_miti=1,k=50):
                 exp_val=bootstrap_mitigated_expectation(c,diag_pauli_op,k,L,complete_meas_fitter=meas_fitter_ampdep)
                 exp_vals.append(exp_val[0])
                 exp_errors.append(exp_val[1])
+    else:
+        if level_miti==1:
+            for i,operator in enumerate(operators):
+                meas_circs+=measure_pauli_operators_meas(circuit,operator,qubits[i])
+            job = estimator.run(circuits=meas_circs,parameter_values=None, parameters=None,shots=shots)
+            job_result=job.result().quasi_dists
+            bin_dict=[]
+            for i in range (0,len(job_result)):
+                b=list(job_result[i].keys())
+                for j in range (0,len(b)):
+                    b[j]=DecimalToBinary(b[j],meas_circs[i].num_clbits)
+                a=list(job_result[i].values())
+                bin_dict.append(dict(zip(b,a)))
+                start=0
+            for i,operator in enumerate(operators):
+                diag_pauli_op = np.diag([(-1)**bin(k).count('1') for k in range(2**len(qubits[i]))])
+                meas_calibs, s_labels = complete_meas_cal(np.arange(len(qubits[i])), len(qubits[i]), len(qubits[i]), circlabel='')
+                job_cal_aux = execute(meas_calibs, backend=Aer.get_backend('aer_simulator'), shots=shots)
+                cal_aux = job_cal_aux.result() 
+                job_qiskit=copy.deepcopy(cal_aux)
+
+                result_measure=bin_dict[start]
+                for j in range (0,len(s_labels)):
+                    job_qiskit.results[j].data.counts=bin_dict[1+start+j]
+                meas_fitter = CompleteMeasFitter(job_qiskit, state_labels=s_labels)
+                meas_fitters.append(meas_fitter)
+                start+=len(s_labels)+1 
+                exp_val=bootstrap_mitigated_expectation(result_measure,diag_pauli_op,k,L,complete_meas_fitter=meas_fitter)
+                exp_vals.append(exp_val[0])
+                exp_errors.append(exp_val[1])
+        if level_miti==2 or level_miti==3 or level_miti==4:
+            for i,operator in enumerate(operators):
+                meas_circs+=measure_pauli_operators_miti(circuit,operator,qubits[i])
+            job = estimator.run(circuits=meas_circs,parameter_values=None, parameters=None,shots=shots)
+            job_result=job.result().quasi_dists
+            bin_dict=[]
+            start=0
+            meas_fitters=[]
+            for i in range (0,len(job_result)):
+                b=list(job_result[i].keys())
+                for j in range (0,len(b)):
+                    b[j]=DecimalToBinary(b[j],meas_circs[i].num_clbits)
+                a=list(job_result[i].values())
+                bin_dict.append(dict(zip(b,a)))
+            for i, pauli_op in enumerate(operators):
+
+                meas_calibs, s_labels = complete_meas_cal(np.arange(len(qubits[i])), len(qubits[i]), len(qubits[i]), circlabel='')
+                job_cal_aux = execute(meas_calibs, backend=Aer.get_backend('aer_simulator'), shots=shots)
+                cal_aux = job_cal_aux.result() 
+                job_qiskit=copy.deepcopy(cal_aux)
+                job_GEM_L=copy.deepcopy(cal_aux)
+                job_GEM_R=copy.deepcopy(cal_aux)
+
+
+                result_measure=bin_dict[start]
+                for j in range (0,len(s_labels)):
+                    job_qiskit.results[j].data.counts=bin_dict[1+start+j]
+                meas_fitter = CompleteMeasFitter(job_qiskit, state_labels=s_labels)
+                for j in range (0,len(s_labels)):
+                    job_GEM_L.results[j].data.counts=meas_fitter.filter.apply(bin_dict[1+start+len(s_labels)+j],method="least_squares")
+                    job_GEM_R.results[j].data.counts=meas_fitter.filter.apply(bin_dict[1+start+2*len(s_labels)+j],method="least_squares")
+                start+=3*len(s_labels)+1 
+                meas_fitter_GEM_L = CompleteMeasFitter(job_GEM_L, state_labels=s_labels)
+                meas_fitter_GEM_R = CompleteMeasFitter(job_GEM_L, state_labels=s_labels)
+                Cal_GEM_L = meas_fitter_GEM_L.cal_matrix
+                Cal_GEM_R = meas_fitter_GEM_R.cal_matrix
+                Cal_GEM=(Cal_GEM_L+Cal_GEM_R)/2
+
+                meas_fitter_GEM=copy.deepcopy(meas_fitter)
+                meas_fitter_GEM.cal_matrices=Cal_GEM
+
+                r=np.sum(Cal_GEM,axis=1,dtype='float')
+                r=r/np.sum(r)
+                #p_t=(Cal_GEM[0][0]-1)/(r[0]-1)
+                #'''
+                p_t=0
+                for m in range (0,len(r)):
+                    p_t+=(Cal_GEM[m][m]-1)/(r[m]-1)/len(r)
+                #'''
+
+                random_vector=dict(zip(s_labels,r))
+                Cal_ampdep=Cal_GEM
+                for x in range (0,len(s_labels)):
+                    for y in range (0,len(s_labels)):
+                        Cal_ampdep[x][y]=(Cal_GEM[x][y]-p_t*r[y])/(1-p_t)
+                meas_fitter_ampdep=copy.deepcopy(meas_fitter)
+                meas_fitter_ampdep.cal_matrices=Cal_ampdep
+                Cal_qiskit=meas_fitter.cal_matrix
+                meas_fitt.append([Cal_qiskit,Cal_GEM,random_vector,p_t,Cal_ampdep])
+                diag_pauli_op = np.diag([(-1)**bin(k).count('1') for k in range(2**len(qubits[i]))])
+                if level_miti==2:
+                    miti_counts=bootstrap_counts(result_measure,20,shots,return_mean=True,complete_meas_fitter=meas_fitter)
+                    exp_val=bootstrap_mitigated_expectation(miti_counts,diag_pauli_op,k,L,complete_meas_fitter=meas_fitter_GEM)
+                    exp_vals.append(exp_val[0])
+                    exp_errors.append(exp_val[1])
+                if level_miti==3:
+                    exp_val=bootstrap_mitigated_expectation(result_measure,diag_pauli_op,k,L,complete_meas_fitter=meas_fitter)
+                    exp_val_rand=bootstrap_mitigated_expectation(random_vector,diag_pauli_op,k,L,complete_meas_fitter=None)
+                    exp_vals.append((exp_val[0]-p_t*exp_val_rand[0])/(1-p_t))
+                    exp_vals.append(exp_val[0]/(1-p_t))
+                    exp_errors.append(exp_val[1]/(1-p_t))
+                if level_miti==4:
+                    miti_counts=bootstrap_counts(result_measure,20,shots,return_mean=True,complete_meas_fitter=meas_fitter)
+                    c=random_vector
+                    for label in s_labels:
+                        if label not in miti_counts.keys():
+                            miti_counts[label]=0
+                        c[label]=(miti_counts[label]-p_t*random_vector[label])/(1-p_t)
+                    if any(v < 0 for v in c.values()):
+                        sum_c=sum(c.values())
+                        m = min(c.values())
+                        c = {k: v - 2 * m for k, v in c.items()}
+                        sum_counts=sum(c.values())
+                        for u in c.values():
+                            u=u/sum_counts*sum_c
+                    exp_val=bootstrap_mitigated_expectation(c,diag_pauli_op,k,L,complete_meas_fitter=meas_fitter_ampdep)
+                    exp_vals.append(exp_val[0])
+                    exp_errors.append(exp_val[1])
     exp_val=0
     exp_err=0
     for l,coeff in enumerate(coefficients):
         exp_val+=coeff*exp_vals[l]
         exp_err+=pow(coeff,2)*pow(exp_errors[l],2)
     exp_err=np.sqrt(exp_err)
-    return exp_val,exp_err
+
+    return exp_val,exp_err,meas_fitt
     
 
 
