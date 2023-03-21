@@ -322,7 +322,6 @@ def miti_estimator(circuit,operator,estimator,shots=10000,level_miti=1,k=50,meas
     meas_fitt=[]
 
     if level_miti==0 or meas_fitters is not None:
-        
         for i,operator in enumerate(operators):
             meas_circs.append(measure_pauli_string(circuit,operator,qubits[i]))
         job = estimator.run(circuits=meas_circs,parameter_values=None, parameters=None,shots=shots)
@@ -463,12 +462,13 @@ def miti_estimator(circuit,operator,estimator,shots=10000,level_miti=1,k=50,meas
 
                 r=np.sum(Cal_GEM,axis=1,dtype='float')
                 r=r/np.sum(r)
-                #p_t=(Cal_GEM[0][0]-1)/(r[0]-1)
-                #'''
+                
+                p_t=(Cal_GEM[0][0]-1)/(r[0]-1)
+                '''
                 p_t=0
                 for m in range (0,len(r)):
                     p_t+=(Cal_GEM[m][m]-1)/(r[m]-1)/len(r)
-                #'''
+                '''
 
                 random_vector=dict(zip(s_labels,r))
                 Cal_ampdep=Cal_GEM
